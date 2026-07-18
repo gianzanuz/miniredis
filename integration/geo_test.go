@@ -937,3 +937,48 @@ func TestGeo(t *testing.T) {
 		c.DoLoosely("ZRANGE", "resbymemd", "0", "-1", "WITHSCORES")
 	})
 }
+
+func TestGeosearch(t *testing.T) {
+	skip(t)
+	testRaw(t, func(c *client) {
+		c.Do("GEOADD",
+			"stations",
+			"-73.99106999861966", "40.73005400028978", "Astor Pl",
+			"-74.00019299927328", "40.71880300107709", "Canal St",
+			"-73.98384899986625", "40.76172799961419", "50th St",
+		)
+
+		// FROMLONLAT + BYRADIUS
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km")
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km", "ASC")
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km", "DESC")
+		c.DoRounded(3, "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "400", "km", "ASC", "WITHDIST")
+		c.DoRounded(3, "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "400", "km", "ASC", "WITHDIST", "WITHCOORD")
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "400", "km", "ASC", "WITHHASH")
+		c.DoRounded(3, "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "400", "km", "ASC", "COUNT", "2")
+		// note: COUNT ... ANY has no ordering guarantee in redis, so its exact
+		// result is not comparable against a reference implementation.
+
+		// FROMLONLAT + BYBOX
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYBOX", "8", "8", "km", "ASC")
+		c.DoRounded(3, "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYBOX", "800", "800", "km", "ASC", "WITHDIST", "WITHCOORD")
+		c.Do("GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYBOX", "1", "8", "km", "ASC")
+
+		// FROMMEMBER
+		c.Do("GEOSEARCH", "stations", "FROMMEMBER", "Astor Pl", "BYRADIUS", "4", "km", "ASC")
+		c.Do("GEOSEARCH", "stations", "FROMMEMBER", "Astor Pl", "BYBOX", "8", "8", "km", "ASC")
+		c.Error("could not decode", "GEOSEARCH", "stations", "FROMMEMBER", "nosuch", "BYRADIUS", "4", "km")
+
+		// non-existing key
+		c.Do("GEOSEARCH", "foo", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km")
+
+		// error cases
+		c.Error("syntax error", "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "FROMMEMBER", "Astor Pl", "BYRADIUS", "4", "km")
+		c.Error("exactly one of", "GEOSEARCH", "stations", "BYRADIUS", "4", "km", "WITHDIST", "WITHCOORD")
+		c.Error("exactly one of", "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "WITHDIST", "WITHCOORD")
+		c.Error("unsupported unit", "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "mm")
+		c.Error("not a valid float", "GEOSEARCH", "stations", "FROMLONLAT", "abc", "40.7728773", "BYRADIUS", "4", "km")
+		c.Error("COUNT must", "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km", "COUNT", "0")
+		c.Error("syntax error", "GEOSEARCH", "stations", "FROMLONLAT", "-73.9718893", "40.7728773", "BYRADIUS", "4", "km", "FOOBAR")
+	})
+}
