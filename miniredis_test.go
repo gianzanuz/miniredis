@@ -359,3 +359,80 @@ func TestMiniredis_isValidCMD(t *testing.T) {
 		})
 	}
 }
+
+// Dial on a non-started Miniredis: no TCP listener is ever created.
+func TestDial(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustDo(t, c, "SET", "foo", "bar", proto.Inline("OK"))
+	mustDo(t, c, "GET", "foo", proto.String("bar"))
+
+	equals(t, "", m.Addr())
+}
+
+// Multiple Dial connections work independently.
+func TestDialMultiple(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	conn1, err := m.Dial()
+	ok(t, err)
+	c1 := proto.NewClient(conn1)
+	defer c1.Close()
+
+	conn2, err := m.Dial()
+	ok(t, err)
+	c2 := proto.NewClient(conn2)
+	defer c2.Close()
+
+	mustDo(t, c1, "SET", "foo", "from-c1", proto.Inline("OK"))
+	mustDo(t, c2, "GET", "foo", proto.String("from-c1"))
+
+	mustDo(t, c1, "MULTI", proto.Inline("OK"))
+	mustDo(t, c1, "SET", "foo", "in-tx", proto.Inline("QUEUED"))
+	mustDo(t, c2, "GET", "foo", proto.String("from-c1"))
+	mustDo(t, c1, "EXEC", proto.Array(proto.Inline("OK")))
+	mustDo(t, c2, "GET", "foo", proto.String("in-tx"))
+}
+
+// Dial alongside a TCP listener started with Start().
+func TestDialWithStart(t *testing.T) {
+	m, err := Run()
+	ok(t, err)
+	defer m.Close()
+
+	tcp, err := proto.Dial(m.Addr())
+	ok(t, err)
+	defer tcp.Close()
+
+	conn, err := m.Dial()
+	ok(t, err)
+	pipe := proto.NewClient(conn)
+	defer pipe.Close()
+
+	mustDo(t, tcp, "SET", "foo", "bar", proto.Inline("OK"))
+	mustDo(t, pipe, "GET", "foo", proto.String("bar"))
+}
+
+// Close() unblocks and closes Dial connections.
+func TestDialClose(t *testing.T) {
+	m := NewMiniRedis()
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+
+	mustDo(t, c, "PING", proto.Inline("PONG"))
+
+	m.Close()
+
+	if _, err := c.Do("PING"); err == nil {
+		t.Fatal("expected an error on a closed server")
+	}
+}

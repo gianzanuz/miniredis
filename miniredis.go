@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"math/rand"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -209,8 +210,14 @@ func (m *Miniredis) StartAddrTLS(addr string, cfg *tls.Config) error {
 func (m *Miniredis) start(s *server.Server) error {
 	m.Lock()
 	defer m.Unlock()
+	return m.startLocked(s)
+}
+
+func (m *Miniredis) startLocked(s *server.Server) error {
 	m.srv = s
-	m.port = s.Addr().Port
+	if a := s.Addr(); a != nil {
+		m.port = a.Port
+	}
 
 	commandsConnection(m)
 	commandsGeneric(m)
@@ -231,6 +238,36 @@ func (m *Miniredis) start(s *server.Server) error {
 	commandsObject(m)
 
 	return nil
+}
+
+// Dial returns an in-memory client connection to the server, served on a
+// net.Pipe: no listener or port is involved. A non-started Miniredis is
+// started without a listener, so NewMiniRedis() + Dial() gives a working
+// server which never touches the network. Note that Addr() has no address to
+// return in that case.
+//
+// Dial fits the Dialer option of most redis clients, and makes miniredis
+// usable inside a testing/synctest bubble, where real sockets can't be used:
+//
+//	client := redis.NewClient(&redis.Options{
+//		Dialer: func(ctx context.Context, _, _ string) (net.Conn, error) {
+//			return m.Dial()
+//		},
+//	})
+func (m *Miniredis) Dial() (net.Conn, error) {
+	m.Lock()
+	if m.srv == nil {
+		if err := m.startLocked(server.NewServerConn()); err != nil {
+			m.Unlock()
+			return nil, err
+		}
+	}
+	srv := m.srv
+	m.Unlock()
+
+	c, s := net.Pipe()
+	srv.ServeConn(s)
+	return c, nil
 }
 
 // Restart restarts a Close()d server on the same port. Values will be
@@ -322,7 +359,11 @@ func (m *Miniredis) swapDB(i, j int) bool {
 func (m *Miniredis) Addr() string {
 	m.Lock()
 	defer m.Unlock()
-	return m.srv.Addr().String()
+	a := m.srv.Addr()
+	if a == nil {
+		return ""
+	}
+	return a.String()
 }
 
 // Host returns the host part of Addr().
