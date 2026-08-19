@@ -65,6 +65,8 @@ type Miniredis struct {
 	scripts     map[string]string // sha1 -> lua src
 	signal      *sync.Cond
 	now         time.Time // time.Now() if not set.
+	clockTTL    bool      // decrease TTLs as the clock advances
+	lastTick    time.Time // last time TTLs were advanced, if clockTTL is set
 	subscribers map[*Subscriber]struct{}
 	rand        *rand.Rand
 	Ctx         context.Context
@@ -325,6 +327,7 @@ func (m *Miniredis) DB(i int) *RedisDB {
 
 // get DB. No locks!
 func (m *Miniredis) db(i int) *RedisDB {
+	m.tickLocked()
 	if db, ok := m.dbs[i]; ok {
 		return db
 	}
@@ -498,6 +501,50 @@ func (m *Miniredis) SetTime(t time.Time) {
 	m.Lock()
 	defer m.Unlock()
 	m.now = t
+	// keep the ClockTTL baseline sane when the clock jumps backwards; a
+	// forward jump stays pending until the next tick.
+	if m.clockTTL && t.Before(m.lastTick) {
+		m.lastTick = t
+	}
+}
+
+// ClockTTL makes TTLs (both key and hash field TTLs) decrease as the clock
+// advances, instead of only via FastForward(). The clock is time.Now(), or
+// the value set with SetTime(). Expired keys are removed lazily, whenever a
+// command or a Miniredis-level accessor touches a database; a *RedisDB held
+// directly does not trigger expiry.
+//
+// With SetTime() this gives deterministic clock-driven expiry: moving the
+// clock forward expires keys, and unlike FastForward() the expiry stays
+// coherent with TIME and (P)EXPIREAT, which follow SetTime() as well.
+//
+// It also makes miniredis work inside a testing/synctest bubble, where
+// time.Now() is the bubble's deterministic fake clock: a plain time.Sleep()
+// there expires keys. Without SetTime() and outside a bubble, TTLs run
+// against the wall clock, which makes expiry depend on test execution
+// speed — usually not what you want in a unittest.
+func (m *Miniredis) ClockTTL(enabled bool) {
+	m.Lock()
+	defer m.Unlock()
+	m.clockTTL = enabled
+	m.lastTick = m.effectiveNow()
+}
+
+// advance TTLs by the clock time elapsed since the last tick. Called with the
+// lock held on every database access, when ClockTTL is enabled.
+func (m *Miniredis) tickLocked() {
+	if !m.clockTTL {
+		return
+	}
+	now := m.effectiveNow()
+	elapsed := now.Sub(m.lastTick)
+	if elapsed <= 0 {
+		return
+	}
+	m.lastTick = now
+	for _, db := range m.dbs {
+		db.fastForward(elapsed)
+	}
 }
 
 // make every command return this message. For example:

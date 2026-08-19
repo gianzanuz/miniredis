@@ -436,3 +436,128 @@ func TestDialClose(t *testing.T) {
 		t.Fatal("expected an error on a closed server")
 	}
 }
+
+// With ClockTTL, advancing the clock with SetTime expires keys.
+func TestClockTTL(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+	m.ClockTTL(true)
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustOK(t, c, "SET", "foo", "bar", "EX", "100")
+	mustDo(t, c, "TTL", "foo", proto.Int(100))
+
+	m.SetTime(start.Add(30 * time.Second))
+	mustDo(t, c, "TTL", "foo", proto.Int(70))
+	mustDo(t, c, "GET", "foo", proto.String("bar"))
+
+	m.SetTime(start.Add(101 * time.Second))
+	mustNil(t, c, "GET", "foo")
+	mustDo(t, c, "TTL", "foo", proto.Int(-2))
+	mustDo(t, c, "EXISTS", "foo", proto.Int(0))
+}
+
+// ClockTTL called before SetTime: the tick baseline follows SetTime, so the
+// order of the two calls doesn't matter.
+func TestClockTTLThenSetTime(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	m.ClockTTL(true)
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustOK(t, c, "SET", "foo", "bar", "EX", "100")
+	m.SetTime(start.Add(200 * time.Second))
+	mustNil(t, c, "GET", "foo")
+}
+
+// Without ClockTTL nothing changes: TTLs stay frozen when the clock moves.
+func TestClockTTLDisabled(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustOK(t, c, "SET", "foo", "bar", "EX", "100")
+	m.SetTime(start.Add(200 * time.Second))
+	mustDo(t, c, "GET", "foo", proto.String("bar"))
+	mustDo(t, c, "TTL", "foo", proto.Int(100))
+}
+
+// FastForward still works alongside ClockTTL.
+func TestClockTTLFastForward(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+	m.ClockTTL(true)
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustOK(t, c, "SET", "foo", "bar", "EX", "100")
+	m.SetTime(start.Add(30 * time.Second))
+	m.FastForward(30 * time.Second)
+	mustDo(t, c, "TTL", "foo", proto.Int(40))
+}
+
+// The direct accessors see expiry too.
+func TestClockTTLDirect(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+	m.ClockTTL(true)
+
+	m.Set("foo", "bar")
+	m.SetTTL("foo", 100*time.Second)
+	assert(t, m.Exists("foo"), "foo should exist before its TTL passes")
+
+	m.SetTime(start.Add(101 * time.Second))
+	assert(t, !m.Exists("foo"), "foo should be expired")
+}
+
+// Hash field TTLs decay with the clock too.
+func TestClockTTLHashFields(t *testing.T) {
+	m := NewMiniRedis()
+	defer m.Close()
+
+	start := time.Date(2022, 3, 4, 13, 0, 0, 0, time.UTC)
+	m.SetTime(start)
+	m.ClockTTL(true)
+
+	conn, err := m.Dial()
+	ok(t, err)
+	c := proto.NewClient(conn)
+	defer c.Close()
+
+	mustDo(t, c, "HSET", "myhash", "field1", "value1", "field2", "value2", proto.Int(2))
+	mustDo(t, c, "HEXPIRE", "myhash", "100", "FIELDS", "1", "field1", proto.Ints(1))
+
+	m.SetTime(start.Add(101 * time.Second))
+	mustNil(t, c, "HGET", "myhash", "field1")
+	mustDo(t, c, "HGET", "myhash", "field2", proto.String("value2"))
+}
