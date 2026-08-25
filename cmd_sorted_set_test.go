@@ -3,6 +3,7 @@ package miniredis
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2/proto"
 )
@@ -2255,4 +2256,151 @@ func TestSortedSetRandmember(t *testing.T) {
 			proto.Error(msgWrongType),
 		)
 	})
+}
+
+// Test BZPOPMIN
+func TestBzpopmin(t *testing.T) {
+	s, c := runWithClient(t)
+
+	t.Run("basic", func(t *testing.T) {
+		s.ZAdd("z", 1, "one")
+		s.ZAdd("z", 2, "two")
+		s.ZAdd("z", 3, "three")
+
+		mustDo(t, c,
+			"BZPOPMIN", "z", "1",
+			proto.Strings("z", "one", "1"),
+		)
+		mustDo(t, c,
+			"BZPOPMIN", "z", "1",
+			proto.Strings("z", "two", "2"),
+		)
+	})
+
+	t.Run("multiple keys", func(t *testing.T) {
+		// The first non-empty key is used, in order.
+		s.ZAdd("z2", 4, "vier")
+		mustDo(t, c,
+			"BZPOPMIN", "nosuch", "z2", "1",
+			proto.Strings("z2", "vier", "4"),
+		)
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		mustDo(t, c,
+			"BZPOPMIN",
+			proto.Error(errWrongNumber("bzpopmin")),
+		)
+		mustDo(t, c,
+			"BZPOPMIN", "z",
+			proto.Error(errWrongNumber("bzpopmin")),
+		)
+		mustDo(t, c,
+			"BZPOPMIN", "z", "-1",
+			proto.Error(msgTimeoutNegative),
+		)
+		mustDo(t, c,
+			"BZPOPMIN", "z", "inf",
+			proto.Error(msgTimeoutIsOutOfRange),
+		)
+		mustDo(t, c,
+			"BZPOPMIN", "z", "notafloat",
+			proto.Error(msgInvalidTimeout),
+		)
+
+		s.Set("str", "value")
+		mustDo(t, c,
+			"BZPOPMIN", "str", "1",
+			proto.Error(msgWrongType),
+		)
+	})
+}
+
+// Test BZPOPMAX
+func TestBzpopmax(t *testing.T) {
+	s, c := runWithClient(t)
+
+	s.ZAdd("z", 1, "one")
+	s.ZAdd("z", 2, "two")
+	s.ZAdd("z", 3, "three")
+
+	mustDo(t, c,
+		"BZPOPMAX", "z", "1",
+		proto.Strings("z", "three", "3"),
+	)
+	mustDo(t, c,
+		"BZPOPMAX", "z", "1",
+		proto.Strings("z", "two", "2"),
+	)
+}
+
+func TestBzpopBlocking(t *testing.T) {
+	s, c := runWithClient(t)
+
+	got := goStrings(t, s, "BZPOPMIN", "z1", "z2", "0")
+	must1(t, c, "ZADD", "z2", "5", "aap")
+
+	select {
+	case have := <-got:
+		equals(t, proto.Strings("z2", "aap", "5"), have)
+	case <-time.After(500 * time.Millisecond):
+		t.Error("BZPOPMIN took too long")
+	}
+}
+
+func TestBzpopTimeout(t *testing.T) {
+	s := RunT(t)
+
+	got := goStrings(t, s, "BZPOPMIN", "z1", "0.1")
+	select {
+	case have := <-got:
+		equals(t, proto.NilList, have)
+	case <-time.After(200 * time.Millisecond):
+		t.Error("BZPOPMIN took too long")
+	}
+}
+
+func TestBzpopTx(t *testing.T) {
+	// BZPOPMIN in a transaction behaves as if the timeout triggers right away.
+	s, c := runWithClient(t)
+
+	{
+		mustOK(t, c, "MULTI")
+		mustDo(t, c,
+			"BZPOPMIN", "z1", "3",
+			proto.Inline("QUEUED"),
+		)
+		mustDo(t, c,
+			"SET", "foo", "bar",
+			proto.Inline("QUEUED"),
+		)
+		mustDo(t, c,
+			"EXEC",
+			proto.Array(
+				proto.NilList,
+				proto.Inline("OK"),
+			),
+		)
+	}
+
+	// Now with a member present.
+	s.ZAdd("z1", 1, "e1")
+	{
+		mustOK(t, c, "MULTI")
+		mustDo(t, c,
+			"BZPOPMIN", "z1", "3",
+			proto.Inline("QUEUED"),
+		)
+		mustDo(t, c,
+			"SET", "foo", "bar",
+			proto.Inline("QUEUED"),
+		)
+		mustDo(t, c,
+			"EXEC",
+			proto.Array(
+				proto.Strings("z1", "e1", "1"),
+				proto.Inline("OK"),
+			),
+		)
+	}
 }
