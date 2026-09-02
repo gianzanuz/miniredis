@@ -166,6 +166,8 @@ Implemented commands:
    - SUNION
    - SUNIONSTORE
  - Sorted Set keys
+   - BZPOPMAX
+   - BZPOPMIN
    - ZADD
    - ZCARD
    - ZCOUNT

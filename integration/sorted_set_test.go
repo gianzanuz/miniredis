@@ -978,3 +978,32 @@ func TestZMScore(t *testing.T) {
 		c.Error("wrong kind", "ZMSCORE", "str", "key1")
 	})
 }
+
+func TestBzpopminmax(t *testing.T) {
+	skip(t)
+	testRaw(t, func(c *client) {
+		c.Do("ZADD", "set:bzpop", "1.0", "key1")
+		c.Do("ZADD", "set:bzpop", "2.0", "key2")
+		c.Do("ZADD", "set:bzpop", "3.0", "key3")
+
+		c.Do("BZPOPMIN", "set:bzpop", "1")
+		c.Do("BZPOPMAX", "set:bzpop", "1")
+
+		// First non-empty key of several.
+		c.Do("BZPOPMIN", "nosuch", "set:bzpop", "1")
+
+		// Nothing left, so times out.
+		c.Do("BZPOPMIN", "set:bzpop", "0.1")
+		c.Do("EXISTS", "set:bzpop")
+
+		// Wrong args
+		c.Error("wrong number", "BZPOPMIN")
+		c.Error("wrong number", "BZPOPMIN", "set:bzpop")
+		c.Error("not a float", "BZPOPMIN", "set:bzpop", "X")
+		c.Error("timeout is negative", "BZPOPMIN", "set:bzpop", "-1")
+		c.Error("timeout is out of range", "BZPOPMIN", "set:bzpop", "inf")
+
+		c.Do("SET", "str", "I am a string")
+		c.Error("wrong kind", "BZPOPMIN", "str", "1")
+	})
+}
