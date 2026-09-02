@@ -472,6 +472,11 @@ func (m *Miniredis) cmdRename(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
+		if opts.from == opts.to {
+			c.WriteOK()
+			return
+		}
+
 		db.rename(opts.from, opts.to)
 		c.WriteOK()
 	})
